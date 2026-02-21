@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>World Time Zone Map - Real-Time Daylight Visualization</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a1a;
+            color: #fff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        h1 {
+            font-size: 1.6rem;
+            margin-bottom: 5px;
+            color: #e0e0ff;
+            text-align: center;
+        }
+
+        #utcClock {
+            font-size: 1rem;
+            color: #aaa;
+            margin-bottom: 15px;
+        }
+
+        #mapContainer {
+            position: relative;
+            width: 960px;
+            max-width: 100%;
+            aspect-ratio: 2 / 1;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 0 40px rgba(0,0,0,0.6);
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        #legend {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 12px;
+            margin-top: 18px;
+            max-width: 960px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85rem;
+            color: #ccc;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 14px;
+            border-radius: 3px;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        #tooltip {
+            position: absolute;
+            background: rgba(10, 10, 30, 0.92);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            padding: 10px 14px;
+            pointer-events: none;
+            display: none;
+            font-size: 0.85rem;
+            z-index: 10;
+            backdrop-filter: blur(6px);
+            max-width: 220px;
+        }
+
+        #tooltip .tt-time { font-size: 1.1rem; font-weight: bold; color: #fff; }
+        #tooltip .tt-phase { color: #f0c040; margin-top: 2px; }
+        #tooltip .tt-zone { color: #aaa; margin-top: 4px; font-size: 0.78rem; }
+    </style>
+</head>
+<body>
+    <h1>🌍 Real-Time World Daylight Map</h1>
+    <div id="utcClock"></div>
+    <div style="margin-bottom: 10px; display: flex; gap: 15px; align-items: center; justify-content: center;">
+        <label style="color: #aaa; font-size: 0.9rem;">
+            Speed: 
+            <select id="speedControl" style="margin-left: 5px; padding: 3px 8px; background: #1a1a2a; color: #fff; border: 1px solid #444; border-radius: 4px;">
+                <option value="1">Real-time (1x)</option>
+                <option value="60">1 minute = 1 second (60x)</option>
+                <option value="3600">1 hour = 1 second (3600x)</option>
+                <option value="86400">1 day = 1 second (86400x)</option>
+            </select>
+        </label>
+    </div>
+    <div id="mapContainer">
+        <canvas id="mapCanvas"></canvas>
+        <div id="tooltip">
+            <div class="tt-time"></div>
+            <div class="tt-phase"></div>
+            <div class="tt-zone"></div>
+        </div>
+    </div>
+    <div id="legend"></div>
+
+    <script>
+        const canvas = document.getElementById('mapCanvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('mapContainer');
+        const tooltip = document.getElementById('tooltip');
+        const utcClockEl = document.getElementById('utcClock');
+        const speedControl = document.getElementById('speedControl');
+
+        const W = 960;
+        const H = 480;
+        canvas.width = W;
+        canvas.height = H;
+
+        // Time simulation
+        let timeSpeed = 1;
+        let simulatedTime = Date.now();
+        let lastFrameTime = Date.now();
+
+        speedControl.addEventListener('change', (e) => {
+            timeSpeed = parseFloat(e.target.value);
+        });
+
+        // Time-of-day phases with colors and hour ranges
+        const phases = [
+            { name: 'Midnight',         emoji: '🌑', hourStart: 0,    hourEnd: 3,    color: [10, 10, 45],     gradientTop: '#05051e', gradientBot: '#0a0a30' },
+            { name: 'Late Night',       emoji: '🌌', hourStart: 3,    hourEnd: 5,    color: [20, 15, 60],     gradientTop: '#0d0a28', gradientBot: '#1a1040' },
+            { name: 'Dawn',             emoji: '🌅', hourStart: 5,    hourEnd: 6.5,  color: [80, 50, 80],     gradientTop: '#2a1535', gradientBot: '#6b3050' },
+            { name: 'Early Morning',    emoji: '🌤', hourStart: 6.5,  hourEnd: 8,    color: [180, 130, 80],   gradientTop: '#8b5530', gradientBot: '#d4a050' },
+            { name: 'Morning',          emoji: '☀️', hourStart: 8,    hourEnd: 10.5, color: [200, 190, 130],  gradientTop: '#a0b8d0', gradientBot: '#d0dde8' },
+            { name: 'Late Morning',     emoji: '🌞', hourStart: 10.5, hourEnd: 12,   color: [220, 220, 180],  gradientTop: '#b0d0e8', gradientBot: '#e8eff5' },
+            { name: 'Noon',             emoji: '☀️', hourStart: 12,   hourEnd: 13.5, color: [240, 240, 210],  gradientTop: '#c0e0f5', gradientBot: '#f0f5fa' },
+            { name: 'Early Afternoon',  emoji: '🌤', hourStart: 13.5, hourEnd: 15.5, color: [230, 220, 170],  gradientTop: '#b5d5e8', gradientBot: '#e5eef5' },
+            { name: 'Afternoon',        emoji: '⛅', hourStart: 15.5, hourEnd: 17,   color: [210, 180, 120],  gradientTop: '#a0b0c0', gradientBot: '#d0c8a0' },
+            { name: 'Late Afternoon',   emoji: '🌇', hourStart: 17,   hourEnd: 18.5, color: [200, 120, 60],   gradientTop: '#804020', gradientBot: '#c07030' },
+            { name: 'Dusk',             emoji: '🌆', hourStart: 18.5, hourEnd: 20,   color: [80, 40, 80],     gradientTop: '#351530', gradientBot: '#602848' },
+            { name: 'Evening',          emoji: '🌃', hourStart: 20,   hourEnd: 22,   color: [30, 20, 65],     gradientTop: '#120a28', gradientBot: '#1e1248' },
+            { name: 'Night',            emoji: '🌙', hourStart: 22,   hourEnd: 24,   color: [15, 12, 50],     gradientTop: '#08061a', gradientBot: '#0e0a30' },
+        ];
+
+        function getPhase(hour) {
+            hour = ((hour % 24) + 24) % 24;
+            for (const p of phases) {
+                if (hour >= p.hourStart && hour < p.hourEnd) return p;
+            }
+            return phases[0];
+        }
+
+        function getColorForHour(hour) {
+            hour = ((hour % 24) + 24) % 24;
+            // Find current and next phase, interpolate
+            let current = phases[0], next = phases[1];
+            for (let i = 0; i < phases.length; i++) {
+                if (hour >= phases[i].hourStart && hour < phases[i].hourEnd) {
+                    current = phases[i];
+                    next = phases[(i + 1) % phases.length];
+                    break;
+                }
+            }
+            const range = current.hourEnd - current.hourStart;
+            const t = (hour - current.hourStart) / range;
+            // Smooth interpolation toward next phase at the boundary
+            const blend = t * t * (3 - 2 * t); // smoothstep
+            const r = current.color[0] + (next.color[0] - current.color[0]) * blend * 0.4;
+            const g = current.color[1] + (next.color[1] - current.color[1]) * blend * 0.4;
+            const b = current.color[2] + (next.color[2] - current.color[2]) * blend * 0.4;
+            return [Math.round(r), Math.round(g), Math.round(b)];
+        }
+
+        // Simplified world map - continent outlines as polygons (lon, lat)
+        // Using simplified landmass paths
+        const continents = [];
+
+        // We'll draw a simplified Natural Earth-style map using coordinate data
+        // For performance, we draw filled rectangles per longitude strip and overlay landmasses
+
+        // Major cities for reference
+        const cities = [
+            { name: 'London',      lon: -0.1,    lat: 51.5 },
+            { name: 'New York',    lon: -74.0,   lat: 40.7 },
+            { name: 'Los Angeles', lon: -118.2,  lat: 34.1 },
+            { name: 'Tokyo',       lon: 139.7,   lat: 35.7 },
+            { name: 'Sydney',      lon: 151.2,   lat: -33.9 },
+            { name: 'Dubai',       lon: 55.3,    lat: 25.3 },
+            { name: 'Mumbai',      lon: 72.9,    lat: 19.1 },
+            { name: 'São Paulo',   lon: -46.6,   lat: -23.6 },
+            { name: 'Cairo',       lon: 31.2,    lat: 30.0 },
+            { name: 'Moscow',      lon: 37.6,    lat: 55.8 },
+            { name: 'Beijing',     lon: 116.4,   lat: 39.9 },
+            { name: 'Nairobi',     lon: 36.8,    lat: -1.3 },
+            { name: 'Anchorage',   lon: -149.9,  lat: 61.2 },
+            { name: 'Honolulu',    lon: -157.8,  lat: 21.3 },
+            { name: 'Lagos',       lon: 3.4,     lat: 6.5 },
+            { name: 'Singapore',   lon: 103.8,   lat: 1.35 },
+            { name: 'Paris',       lon: 2.35,    lat: 48.85 },
+        ];
+
+        // Simplified continent outlines (very simplified polygons: [lon, lat] pairs)
+        const landmasses = [
+            // North America
+            { name: 'North America', points: [
+                [-130,55],[-125,60],[-120,65],[-140,70],[-160,72],[-168,66],[-165,60],[-155,58],
+                [-135,55],[-130,50],[-125,48],[-123,46],[-123,40],[-118,34],[-110,32],[-105,28],
+                [-100,25],[-97,26],[-95,28],[-90,30],[-85,30],[-82,28],[-80,25],[-82,30],
+                [-78,35],[-75,40],[-70,42],[-67,45],[-65,47],[-60,47],[-55,50],[-58,52],
+                [-60,55],[-65,60],[-70,62],[-75,65],[-80,68],[-90,70],[-100,72],[-110,72],
+                [-120,70],[-130,68],[-135,62],[-130,55]
+            ]},
+            // South America
+            { name: 'South America', points: [
+                [-80,10],[-77,8],[-72,12],[-68,12],[-60,8],[-52,4],[-50,0],[-48,-3],
+                [-45,-5],[-40,-8],[-38,-12],[-38,-18],[-42,-22],[-45,-24],[-48,-28],
+                [-52,-33],[-55,-35],[-58,-38],[-65,-40],[-68,-46],[-72,-50],[-75,-53],
+                [-70,-55],[-65,-55],[-68,-50],[-72,-45],[-73,-40],[-72,-35],[-70,-30],
+                [-70,-25],[-70,-18],[-75,-15],[-77,-10],[-78,-5],[-80,0],[-80,5],[-80,10]
+            ]},
+            // Europe
+            { name: 'Europe', points: [
+                [-10,36],[-8,38],[-9,42],[-5,44],[0,44],[3,43],[5,44],[8,44],[13,45],
+                [15,45],[18,42],[20,40],[22,38],[25,38],[28,36],[30,38],[33,36],[35,36],
+                [40,42],[42,44],[45,42],[48,44],[50,46],[48,50],[42,52],[38,55],[35,58],
+                [32,60],[30,62],[28,65],[25,68],[22,70],[18,70],[15,68],[12,65],[10,60],
+                [8,55],[5,52],[3,50],[0,50],[-3,48],[-5,48],[-8,44],[-10,42],[-10,36]
+            ]},
+            // Africa
+            { name: 'Africa', points: [
+                [-17,15],[-15,20],[-17,25],[-13,28],[-8,32],[-5,35],[0,36],[5,37],[10,37],
+                [12,34],[16,32],[20,32],[25,32],[30,31],[32,30],[35,30],[38,28],[42,25],
+                [45,15],[48,10],[50,5],[50,0],[45,-5],[42,-10],[40,-15],[38,-20],[36,-25],
+                [33,-30],[30,-33],[28,-34],[25,-34],[22,-33],[18,-30],[15,-25],[12,-20],
+                [12,-15],[10,-5],[8,5],[5,5],[2,5],[0,5],[-5,5],[-8,5],[-10,8],
+                [-15,10],[-17,12],[-17,15]
+            ]},
+            // Asia
+            { name: 'Asia', points: [
+                [30,38],[35,36],[38,37],[42,38],[45,40],[50,42],[55,45],[60,42],[65,40],
+                [68,38],[72,35],[75,30],[78,28],[80,22],[82,18],[85,15],[88,22],[92,20],
+                [95,18],[98,15],[100,12],[102,8],[104,2],[108,5],[110,2],[115,5],[118,10],
+                [120,15],[120,22],[122,25],[125,30],[128,35],[130,38],[132,35],[135,35],
+                [140,38],[142,43],[145,48],[150,55],[155,57],[160,60],[170,62],[175,64],
+                [180,65],[180,72],[170,72],[160,70],[150,62],[140,55],[135,52],[130,48],
+                [120,55],[110,55],[100,52],[90,50],[80,52],[75,55],[70,55],[68,58],
+                [60,60],[55,55],[50,52],[45,48],[42,44],[40,42],[35,40],[30,38]
+            ]},
+            // Australia
+            { name: 'Australia', points: [
+                [115,-20],[118,-18],[122,-15],[128,-14],[132,-12],[135,-12],[138,-15],
+                [142,-12],[145,-15],[148,-18],[150,-22],[152,-25],[153,-28],[152,-32],
+                [150,-35],[148,-38],[145,-40],[140,-38],[136,-36],[132,-34],[128,-32],
+                [124,-34],[120,-33],[116,-32],[114,-30],[114,-25],[115,-22],[115,-20]
+            ]},
+            // Greenland
+            { name: 'Greenland', points: [
+                [-50,60],[-45,60],[-40,62],[-35,65],[-22,68],[-18,72],[-20,76],[-25,78],
+                [-30,80],[-40,82],[-48,82],[-55,80],[-58,78],[-55,75],[-52,72],[-50,68],
+                [-48,65],[-50,60]
+            ]},
+        ];
+
+        function lonLatToXY(lon, lat) {
+            const x = (lon + 180) / 360 * W;
+            const y = (90 - lat) / 180 * H;
+            return [x, y];
+        }
+
+        function xyToLonLat(x, y) {
+            const lon = (x / W) * 360 - 180;
+            const lat = 90 - (y / H) * 180;
+            return [lon, lat];
+        }
+
+        function getLocalHour(lon, utcHours) {
+            return (utcHours + lon / 15 + 24) % 24;
+        }
+
+        // Subsolar point calculation for more accurate daylight
+        function getSolarDeclination(dayOfYear) {
+            return -23.44 * Math.cos(2 * Math.PI * (dayOfYear + 10) / 365);
+        }
+
+        function drawMap() {
+            // Update simulated time based on speed
+            const currentTime = Date.now();
+            const deltaTime = currentTime - lastFrameTime;
+            lastFrameTime = currentTime;
+            simulatedTime += deltaTime * timeSpeed;
+
+            const now = new Date(simulatedTime);
+            const utcH = now.getUTCHours();
+            const utcM = now.getUTCMinutes();
+            const utcS = now.getUTCSeconds();
+            const utcHours = utcH + utcM / 60 + utcS / 3600;
+
+            utcClockEl.textContent = `UTC: ${String(utcH).padStart(2,'0')}:${String(utcM).padStart(2,'0')}:${String(utcS).padStart(2,'0')}`;
+
+            const imgData = ctx.createImageData(W, H);
+            const data = imgData.data;
+
+            // Day of year for solar declination
+            const start = new Date(now.getUTCFullYear(), 0, 0);
+            const diff = now - start;
+            const dayOfYear = Math.floor(diff / (1000 * 60 * 60 * 24));
+            const declination = getSolarDeclination(dayOfYear);
+
+            for (let x = 0; x < W; x++) {
+                const lon = (x / W) * 360 - 180;
+                const localHour = getLocalHour(lon, utcHours);
+                const col = getColorForHour(localHour);
+
+                for (let y = 0; y < H; y++) {
+                    const lat = 90 - (y / H) * 180;
+
+                    // Adjust brightness slightly based on latitude & solar declination
+                    // Regions closer to subsolar point are slightly brighter during day
+                    const latRad = lat * Math.PI / 180;
+                    const declRad = declination * Math.PI / 180;
+                    const hourAngle = (localHour - 12) * 15 * Math.PI / 180;
+                    const sinAlt = Math.sin(latRad) * Math.sin(declRad) +
+                                   Math.cos(latRad) * Math.cos(declRad) * Math.cos(hourAngle);
+
+                    let brightnessMod = 1.0;
+                    if (sinAlt > 0) {
+                        brightnessMod = 1.0 + sinAlt * 0.15;
+                    } else {
+                        brightnessMod = 1.0 + sinAlt * 0.2; // darker when sun below horizon
+                    }
+
+                    const idx = (y * W + x) * 4;
+                    data[idx]     = Math.min(255, Math.max(0, Math.round(col[0] * brightnessMod)));
+                    data[idx + 1] = Math.min(255, Math.max(0, Math.round(col[1] * brightnessMod)));
+                    data[idx + 2] = Math.min(255, Math.max(0, Math.round(col[2] * brightnessMod)));
+                    data[idx + 3] = 255;
+                }
+            }
+
+            ctx.putImageData(imgData, 0, 0);
+
+            // Draw landmasses
+            ctx.save();
+            for (const land of landmasses) {
+                ctx.beginPath();
+                const [sx, sy] = lonLatToXY(land.points[0][0], land.points[0][1]);
+                ctx.moveTo(sx, sy);
+                for (let i = 1; i < land.points.length; i++) {
+                    const [px, py] = lonLatToXY(land.points[i][0], land.points[i][1]);
+                    ctx.lineTo(px, py);
+                }
+                ctx.closePath();
+                ctx.fillStyle = 'rgba(255,255,255,0.08)';
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+            ctx.restore();
+
+            // Draw grid lines
+            ctx.save();
+            ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+            ctx.lineWidth = 0.5;
+            // Longitude lines every 15° (1 hour)
+            for (let lon = -180; lon <= 180; lon += 15) {
+                const x = (lon + 180) / 360 * W;
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, H);
+                ctx.stroke();
+            }
+            // Latitude lines every 30°
+            for (let lat = -60; lat <= 60; lat += 30) {
+                const y = (90 - lat) / 180 * H;
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(W, y);
+                ctx.stroke();
+            }
+            // Equator
+            ctx.strokeStyle = 'rgba(255,255,100,0.12)';
+            ctx.lineWidth = 1;
+            const eqY = H / 2;
+            ctx.beginPath();
+            ctx.moveTo(0, eqY);
+            ctx.lineTo(W, eqY);
+            ctx.stroke();
+            ctx.restore();
+
+            // Draw solar terminator (day/night boundary)
+            ctx.save();
+            ctx.strokeStyle = 'rgba(255,200,50,0.35)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 4]);
+            ctx.beginPath();
+            let first = true;
+            for (let x = 0; x < W; x++) {
+                const lon = (x / W) * 360 - 180;
+                const lonRad = lon * Math.PI / 180;
+                const declRad = declination * Math.PI / 180;
+
+                // Solar hour angle at this longitude
+                const solarNoonLon = -(utcHours - 12) * 15;
+                const ha = (lon - solarNoonLon) * Math.PI / 180;
+
+                // Latitude where sun altitude = 0
+                const latTerminator = Math.atan(-Math.cos(ha) / Math.tan(declRad)) * 180 / Math.PI;
+
+                const [px, py] = lonLatToXY(lon, latTerminator);
+                if (first) { ctx.moveTo(px, py); first = false; }
+                else ctx.lineTo(px, py);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.restore();
+
+            // Draw sun position
+            const subSolarLon = ((12 - utcHours) * 15 + 360) % 360 - 180;
+            const [sunX, sunY] = lonLatToXY(subSolarLon, declination);
+            ctx.save();
+            // Sun glow
+            const sunGlow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 30);
+            sunGlow.addColorStop(0, 'rgba(255,255,150,0.6)');
+            sunGlow.addColorStop(0.5, 'rgba(255,200,50,0.2)');
+            sunGlow.addColorStop(1, 'rgba(255,200,50,0)');
+            ctx.fillStyle = sunGlow;
+            ctx.beginPath();
+            ctx.arc(sunX, sunY, 30, 0, Math.PI * 2);
+            ctx.fill();
+            // Sun circle
+            ctx.fillStyle = '#ffe040';
+            ctx.beginPath();
+            ctx.arc(sunX, sunY, 6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#ffcc00';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.restore();
+
+            // Draw cities
+            ctx.save();
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            for (const city of cities) {
+                const [cx, cy] = lonLatToXY(city.lon, city.lat);
+                const localH = getLocalHour(city.lon, utcHours);
+                const phase = getPhase(localH);
+
+                // Dot
+                const isNight = localH >= 20 || localH < 5;
+                ctx.fillStyle = isNight ? '#ffdd66' : '#ffffff';
+                ctx.beginPath();
+                ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
+                ctx.fill();
+
+                // City light glow at night
+                if (isNight) {
+                    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, 10);
+                    glow.addColorStop(0, 'rgba(255,220,100,0.3)');
+                    glow.addColorStop(1, 'rgba(255,220,100,0)');
+                    ctx.fillStyle = glow;
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, 10, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // Label
+                const hours = Math.floor(localH);
+                const minutes = Math.floor((localH - hours) * 60);
+                const timeStr = `${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}`;
+
+                ctx.font = 'bold 9px Segoe UI, sans-serif';
+                ctx.fillStyle = isNight ? 'rgba(255,255,200,0.85)' : 'rgba(255,255,255,0.9)';
+                ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+                ctx.lineWidth = 2.5;
+
+                const labelX = cx + 5;
+                const labelY = cy - 1;
+                ctx.strokeText(city.name, labelX, labelY - 5);
+                ctx.fillText(city.name, labelX, labelY - 5);
+
+                ctx.font = '8px Segoe UI, sans-serif';
+                ctx.fillStyle = isNight ? 'rgba(255,230,150,0.75)' : 'rgba(200,230,255,0.8)';
+                ctx.strokeText(timeStr, labelX, labelY + 5);
+                ctx.fillText(timeStr, labelX, labelY + 5);
+            }
+            ctx.restore();
+
+            // Draw phase labels along the bottom
+            ctx.save();
+            const labelY = H - 12;
+            ctx.font = 'bold 10px Segoe UI, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+
+            // Show a phase label every ~45 degrees of longitude
+            for (let lon = -157.5; lon < 180; lon += 45) {
+                const localH = getLocalHour(lon, utcHours);
+                const phase = getPhase(localH);
+                const [lx, ly] = lonLatToXY(lon, -82);
+
+                ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                const textW = ctx.measureText(`${phase.emoji} ${phase.name}`).width;
+                ctx.fillRect(lx - textW/2 - 4, ly - 12, textW + 8, 16);
+
+                ctx.fillStyle = 'rgba(255,255,255,0.8)';
+                ctx.fillText(`${phase.emoji} ${phase.name}`, lx, ly + 2);
+            }
+            ctx.restore();
+        }
+
+        // Tooltip
+        container.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = W / rect.width;
+            const scaleY = H / rect.height;
+            const mx = (e.clientX - rect.left) * scaleX;
+            const my = (e.clientY - rect.top) * scaleY;
+
+            const [lon, lat] = xyToLonLat(mx, my);
+            const now = new Date(simulatedTime);
+            const utcHours = now.getUTCHours() + now.getUTCMinutes() / 60 + now.getUTCSeconds() / 3600;
+            const localH = getLocalHour(lon, utcHours);
+            const phase = getPhase(localH);
+
+            const hours = Math.floor(localH);
+            const minutes = Math.floor((localH - hours) * 60);
+            const timeStr = `${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}`;
+            const utcOffset = lon / 15;
+            const utcSign = utcOffset >= 0 ? '+' : '';
+            const utcStr = `UTC${utcSign}${utcOffset.toFixed(1)}`;
+
+            tooltip.querySelector('.tt-time').textContent = `🕐 ${timeStr}`;
+            tooltip.querySelector('.tt-phase').textContent = `${phase.emoji} ${phase.name}`;
+            tooltip.querySelector('.tt-zone').textContent = `${utcStr} | ${lat.toFixed(1)}°${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lon).toFixed(1)}°${lon >= 0 ? 'E' : 'W'}`;
+
+            tooltip.style.display = 'block';
+            let tx = e.clientX - container.getBoundingClientRect().left + 15;
+            let ty = e.clientY - container.getBoundingClientRect().top - 10;
+            if (tx + 220 > container.clientWidth) tx = tx - 240;
+            if (ty + 80 > container.clientHeight) ty = ty - 80;
+            tooltip.style.left = tx + 'px';
+            tooltip.style.top = ty + 'px';
+        });
+
+        container.addEventListener('mouseleave', () => {
+            tooltip.style.display = 'none';
+        });
+
+        // Build legend
+        function buildLegend() {
+            const legendEl = document.getElementById('legend');
+            for (const p of phases) {
+                const item = document.createElement('div');
+                item.className = 'legend-item';
+                const colorBox = document.createElement('div');
+                colorBox.className = 'legend-color';
+                colorBox.style.background = `rgb(${p.color[0]},${p.color[1]},${p.color[2]})`;
+                item.appendChild(colorBox);
+                const label = document.createElement('span');
+                label.textContent = `${p.emoji} ${p.name}`;
+                item.appendChild(label);
+                legendEl.appendChild(item);
+            }
+        }
+
+        buildLegend();
+
+        // Animation loop
+        function animate() {
+            drawMap();
+            requestAnimationFrame(animate);
+        }
+
+        animate();
+    </script>
+</body>
+</html>
